@@ -632,6 +632,13 @@ void draw_util_image(cairo_surface_t *image, surface_t *surface, int x, int y, i
 void draw_util_rectangle(surface_t *surface, color_t color, double x, double y, double w, double h);
 
 /**
+ * Draws a filled, round cornered, rectangle.
+ * This function is a convenience wrapper and takes care of flushing the
+ * surface as well as restoring the cairo state.
+ *
+ */
+void draw_util_soft_rectangle(surface_t *surface, color_t color, double x, double y, double w, double h, double corner_radius);
+/**
  * Clears a surface with the given color.
  *
  */

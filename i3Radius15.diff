@@ -1,0 +1,434 @@
+diff --git a/README.md b/README.md
+index a4702955..b40ae49c 100644
+--- a/README.md
++++ b/README.md
+@@ -9,7 +9,7 @@
+ 
+ i3-gaps is a fork of [i3wm](https://www.i3wm.org), a tiling window manager for X11. It is kept up to date with upstream, adding a few additional features such as gaps between windows (see below for a complete list).
+ 
+-![i3](http://i.imgur.com/y8sZE6o.jpg)
++![i3](https://i.imgur.com/KC7GL4D.png)
+ 
+ ## How do I install i3-gaps?
+ 
+diff --git a/build.sh b/build.sh
+new file mode 100755
+index 00000000..b01e3250
+--- /dev/null
++++ b/build.sh
+@@ -0,0 +1,13 @@
++#!/bin/sh
++
++# compile & install
++autoreconf --force --install
++rm -rf build/
++mkdir -p build && cd build/
++
++# Disabling sanitizers is important for release versions!
++# The prefix and sysconfdir are, obviously, dependent on the distribution.
++
++../configure --prefix=/usr --sysconfdir=/etc --disable-sanitizers
++make
++sudo make install
+diff --git a/include/config_directives.h b/include/config_directives.h
+index c6a60061..ab728732 100644
+--- a/include/config_directives.h
++++ b/include/config_directives.h
+@@ -46,6 +46,7 @@ CFGFUN(for_window, const char *command);
+ CFGFUN(gaps, const char *workspace, const char *type, const long value);
+ CFGFUN(smart_borders, const char *enable);
+ CFGFUN(smart_gaps, const char *enable);
++CFGFUN(border_radius, const long radius);
+ CFGFUN(floating_minimum_size, const long width, const long height);
+ CFGFUN(floating_maximum_size, const long width, const long height);
+ CFGFUN(default_orientation, const char *orientation);
+diff --git a/include/configuration.h b/include/configuration.h
+index 28bcaa42..2775779e 100644
+--- a/include/configuration.h
++++ b/include/configuration.h
+@@ -274,6 +274,9 @@ struct Config {
+ 
+     /* Disable gaps if there is only one container on the workspace */
+     smart_gaps_t smart_gaps;
++
++    /* Border radius (resloved/i3) */
++    int32_t border_radius;
+ };
+ 
+ /**
+diff --git a/include/data.h b/include/data.h
+index ed0931ce..7c142e9b 100644
+--- a/include/data.h
++++ b/include/data.h
+@@ -785,4 +785,6 @@ struct Con {
+ 
+     /* The colormap for this con if a custom one is used. */
+     xcb_colormap_t colormap;
++    
++    uint32_t border_radius;
+ };
+diff --git a/include/libi3.h b/include/libi3.h
+index 005167c7..1e85d64b 100644
+--- a/include/libi3.h
++++ b/include/libi3.h
+@@ -631,6 +631,13 @@ void draw_util_image(cairo_surface_t *image, surface_t *surface, int x, int y, i
+  */
+ void draw_util_rectangle(surface_t *surface, color_t color, double x, double y, double w, double h);
+ 
++/**
++ * Draws a filled, round cornered, rectangle.
++ * This function is a convenience wrapper and takes care of flushing the
++ * surface as well as restoring the cairo state.
++ *
++ */
++void draw_util_soft_rectangle(surface_t *surface, color_t color, double x, double y, double w, double h, double corner_radius);
+ /**
+  * Clears a surface with the given color.
+  *
+diff --git a/libi3/draw_util.c b/libi3/draw_util.c
+index 30eae656..52f1b523 100644
+--- a/libi3/draw_util.c
++++ b/libi3/draw_util.c
+@@ -14,6 +14,8 @@
+ #include <xcb/xcb.h>
+ #include <xcb/xcb_aux.h>
+ 
++#define M_PI 3.14159265358979323846
++
+ /* The default visual_type to use if none is specified when creating the surface. Must be defined globally. */
+ extern xcb_visualtype_t *visual_type;
+ 
+@@ -179,6 +181,31 @@ void draw_util_image(cairo_surface_t *image, surface_t *surface, int x, int y, i
+     cairo_restore(surface->cr);
+ }
+ 
++
++void cairo_soft_rectangle(
++    cairo_t *cr,
++    double x,        /* parameters like cairo_rectangle */
++    double y,
++    double width,
++    double height,
++    double aspect,     /* aspect ratio */
++    double corner_radius /* and corner curvature radius */
++    ){
++
++    double radius = corner_radius / aspect;
++    double degrees = M_PI / 180.0;
++
++    cairo_new_sub_path (cr);
++    cairo_arc (cr, x + width - radius, y + radius, radius, -90 * degrees, 0 * degrees);
++    cairo_arc (cr, x + width - radius, y + height - radius, radius, 0 * degrees, 90 * degrees);
++    cairo_arc (cr, x + radius, y + height - radius, radius, 90 * degrees, 180 * degrees);
++    cairo_arc (cr, x + radius, y + radius, radius, 180 * degrees, 270 * degrees);
++    cairo_close_path (cr);
++    
++    cairo_fill_preserve (cr);
++    cairo_stroke (cr);
++}
++
+ /*
+  * Draws a filled rectangle.
+  * This function is a convenience wrapper and takes care of flushing the
+@@ -205,6 +232,26 @@ void draw_util_rectangle(surface_t *surface, color_t color, double x, double y,
+ 
+     cairo_restore(surface->cr);
+ }
++void draw_util_soft_rectangle(surface_t *surface, color_t color, double x, double y, double w, double h, double corner_radius) {
++    RETURN_UNLESS_SURFACE_INITIALIZED(surface);
++
++    cairo_save(surface->cr);
++
++    /* Using the SOURCE operator will copy both color and alpha information directly
++     * onto the surface rather than blending it. This is a bit more efficient and
++     * allows better color control for the user when using opacity. */
++    cairo_set_operator(surface->cr, CAIRO_OPERATOR_SOURCE);
++    draw_util_set_source_color(surface, color);
++
++    cairo_soft_rectangle(surface->cr, x, y, w, h, 1.0, corner_radius);
++    cairo_fill(surface->cr);
++
++    /* Make sure we flush the surface for any text drawing operations that could follow.
++     * Since we support drawing text via XCB, we need this. */
++    CAIRO_SURFACE_FLUSH(surface->surface);
++
++    cairo_restore(surface->cr);
++}
+ 
+ /*
+  * Clears a surface with the given color.
+diff --git a/parser-specs/config.spec b/parser-specs/config.spec
+index 15be38a5..a34ec14a 100644
+--- a/parser-specs/config.spec
++++ b/parser-specs/config.spec
+@@ -28,6 +28,7 @@ state INITIAL:
+   'gaps'                                   -> GAPS
+   'smart_borders'                          -> SMART_BORDERS
+   'smart_gaps'                             -> SMART_GAPS
++  'border_radius'                          -> BORDER_RADIUS
+   'floating_minimum_size'                  -> FLOATING_MINIMUM_SIZE_WIDTH
+   'floating_maximum_size'                  -> FLOATING_MAXIMUM_SIZE_WIDTH
+   'floating_modifier'                      -> FLOATING_MODIFIER
+@@ -96,6 +97,11 @@ state INCLUDE:
+   pattern = string
+       -> call cfg_include($pattern)
+ 
++# border_radius <radius>
++state BORDER_RADIUS:
++  radius = number
++      -> call cfg_border_radius(&radius)
++
+ # floating_minimum_size <width> x <height>
+ state FLOATING_MINIMUM_SIZE_WIDTH:
+   width = number
+diff --git a/src/con.c b/src/con.c
+index 1380947a..541695e3 100644
+--- a/src/con.c
++++ b/src/con.c
+@@ -1670,6 +1670,9 @@ Rect con_border_style_rect(Con *con) {
+             return (Rect){0, 0, 0, 0};
+     }
+ 
++    // Copy border_radius from config to con 
++    con->border_radius = config.border_radius;
++
+     adjacent_t borders_to_hide = ADJ_NONE;
+     int border_width = con->current_border_width;
+     DLOG("The border width for con is set to: %d\n", con->current_border_width);
+diff --git a/src/config_directives.c b/src/config_directives.c
+index 1ec563f1..a0533606 100644
+--- a/src/config_directives.c
++++ b/src/config_directives.c
+@@ -386,6 +386,10 @@ CFGFUN(smart_gaps, const char *enable) {
+         config.smart_gaps = boolstr(enable) ? SMART_GAPS_ON : SMART_GAPS_OFF;
+ }
+ 
++CFGFUN(border_radius, const long radius) {
++    config.border_radius = radius;
++}
++
+ CFGFUN(floating_minimum_size, const long width, const long height) {
+     config.floating_minimum_width = width;
+     config.floating_minimum_height = height;
+diff --git a/src/x.c b/src/x.c
+index c65b445e..2ba48fd7 100644
+--- a/src/x.c
++++ b/src/x.c
+@@ -452,12 +452,175 @@ static size_t x_get_border_rectangles(Con *con, xcb_rectangle_t rectangles[4]) {
+     return count;
+ }
+ 
++
++void x_shape_title(Con *con){
++
++    if (con->layout != L_TABBED && con->layout != L_STACKED) {
++        return;
++    }
++
++    uint16_t w  = con->rect.width;
++    uint16_t h  = con->rect.height;
++
++    xcb_pixmap_t pid = xcb_generate_id(conn);
++
++    xcb_create_pixmap(conn, 1, pid, con->frame.id, w, h);
++
++    xcb_gcontext_t black = xcb_generate_id(conn);
++    xcb_gcontext_t white = xcb_generate_id(conn);
++
++    xcb_create_gc(conn, black, pid, XCB_GC_FOREGROUND, (uint32_t[]){0, 0});
++    xcb_create_gc(conn, white, pid, XCB_GC_FOREGROUND, (uint32_t[]){1, 0});
++
++    int32_t r = con->border_radius;
++    int32_t d = r * 2;
++
++    xcb_rectangle_t bounding = {0, 0, w, h};
++
++    xcb_arc_t arcs[] = {
++                        { 0, 1, d, d, 0, 360 << 6 },
++                        { w-d-1, 1, d, d, 0, 360 << 6 },
++    };
++
++    xcb_rectangle_t rects[] = {
++                               { r, 0, w-d, h },
++                               { 0, r, w, h-r },
++    };
++
++    xcb_poly_fill_rectangle(conn, pid, black, 1, &bounding);
++    xcb_poly_fill_rectangle(conn, pid, white, 2, rects);
++    xcb_poly_fill_arc(conn, pid, white, 2, arcs);
++
++    xcb_shape_mask(conn, XCB_SHAPE_SO_SET, XCB_SHAPE_SK_BOUNDING, con->frame.id, 0, 0, pid);
++    xcb_shape_mask(conn, XCB_SHAPE_SO_SET, XCB_SHAPE_SK_CLIP, con->frame.id, 0, 0, pid);
++
++    xcb_free_pixmap(conn, pid);
++}
++
++/*
++ * Round window corners when possible
++ *
++ */
++void x_shape_window(Con *con) {
++
++    const xcb_query_extension_reply_t *shape_query;
++    shape_query = xcb_get_extension_data(conn, &xcb_shape_id);
++
++    if (!shape_query->present || con->parent->type == CT_DOCKAREA) {
++        return;
++    }
++
++    if (con->fullscreen_mode) {
++        xcb_shape_mask(conn, XCB_SHAPE_SO_SET, XCB_SHAPE_SK_BOUNDING, con->frame.id, 0, 0, XCB_NONE);
++        xcb_shape_mask(conn, XCB_SHAPE_SO_SET, XCB_SHAPE_SK_CLIP, con->frame.id, 0, 0, XCB_NONE);
++        return;
++    }
++
++    uint16_t w  = con->rect.width;
++    uint16_t h  = con->rect.height;
++    uint16_t dh = con->deco_rect.height;
++
++    xcb_pixmap_t pid = xcb_generate_id(conn);
++
++    xcb_create_pixmap(conn, 1, pid, con->frame.id, w, h);
++
++    xcb_gcontext_t black = xcb_generate_id(conn);
++    xcb_gcontext_t white = xcb_generate_id(conn);
++
++    xcb_create_gc(conn, black, pid, XCB_GC_FOREGROUND, (uint32_t[]){0, 0});
++    xcb_create_gc(conn, white, pid, XCB_GC_FOREGROUND, (uint32_t[]){1, 0});
++
++    int32_t r = con->border_radius;
++    int32_t d = r * 2;
++
++    xcb_rectangle_t bounding = {0, 0, w, h};
++
++
++    xcb_arc_t arcs[] = {
++                        { 0, -dh, d, d, 0, 360 << 6 },
++                        { 0, h-d-1, d, d, 0, 360 << 6 },
++                        { w-d-1, -dh, d, d, 0, 360 << 6 },
++                        { w-d-1, h-d-1, d, d, 0, 360 << 6 },
++    };
++
++    xcb_rectangle_t rects[] = {
++                               { r, 0, w-d, h },
++                               { 0, r-dh, w, h-d+dh },
++    };
++
++    xcb_poly_fill_rectangle(conn, pid, black, 1, &bounding);
++    xcb_poly_fill_rectangle(conn, pid, white, 2, rects);
++    xcb_poly_fill_arc(conn, pid, white, 4, arcs);
++
++    xcb_shape_mask(conn, XCB_SHAPE_SO_SET, XCB_SHAPE_SK_BOUNDING, con->frame.id, 0, 0, pid);
++    xcb_shape_mask(conn, XCB_SHAPE_SO_SET, XCB_SHAPE_SK_CLIP, con->frame.id, 0, 0, pid);
++
++    xcb_free_pixmap(conn, pid);
++}
++
++void x_shape_inner_window(Con *con) {
++    const xcb_query_extension_reply_t *shape_query;
++    shape_query = xcb_get_extension_data(conn, &xcb_shape_id);
++
++    if (!shape_query->present || con->parent->type == CT_DOCKAREA) {
++        return;
++    }
++
++    if (con->fullscreen_mode) {
++        xcb_shape_mask(conn, XCB_SHAPE_SO_SET, XCB_SHAPE_SK_BOUNDING, con->window->id, 0, 0, XCB_NONE);
++        xcb_shape_mask(conn, XCB_SHAPE_SO_SET, XCB_SHAPE_SK_CLIP, con->window->id, 0, 0, XCB_NONE);
++        return;
++    }
++
++    uint16_t w = con->window_rect.width;
++    uint16_t h = con->window_rect.height;
++
++    xcb_pixmap_t pid = xcb_generate_id(conn);
++
++    xcb_create_pixmap(conn, 1, pid, con->window->id, w, h);
++
++    xcb_gcontext_t black = xcb_generate_id(conn);
++    xcb_gcontext_t white = xcb_generate_id(conn);
++
++    xcb_create_gc(conn, black, pid, XCB_GC_FOREGROUND, (uint32_t[]){0, 0});
++    xcb_create_gc(conn, white, pid, XCB_GC_FOREGROUND, (uint32_t[]){1, 0});
++
++    int32_t r = con->border_radius;
++    int32_t d = r * 2;
++
++    xcb_rectangle_t bounding = {0, 0, w, h};
++
++
++    xcb_arc_t arcs[] = {
++                        { 0, 0, d, d, 0, 360 << 6 },
++                        { 0, h-d-1, d, d, 0, 360 << 6 },
++                        { w-d-1, 0, d, d, 0, 360 << 6 },
++                        { w-d-1, h-d-1, d, d, 0, 360 << 6 },
++    };
++
++    xcb_rectangle_t rects[] = {
++                               { r, 0, w-d, h },
++                               { 0, r, w, h-d },
++    };
++
++    xcb_poly_fill_rectangle(conn, pid, black, 1, &bounding);
++    xcb_poly_fill_rectangle(conn, pid, white, 2, rects);
++    xcb_poly_fill_arc(conn, pid, white, 4, arcs);
++
++    xcb_shape_mask(conn, XCB_SHAPE_SO_SET, XCB_SHAPE_SK_BOUNDING, con->window->id, 0, 0, pid);
++    xcb_shape_mask(conn, XCB_SHAPE_SO_SET, XCB_SHAPE_SK_CLIP, con->window->id, 0, 0, pid);
++
++    xcb_free_pixmap(conn, pid);
++}
++
++
+ /*
+  * Draws the decoration of the given container onto its parent.
+  *
+  */
+ void x_draw_decoration(Con *con) {
+     Con *parent = con->parent;
++    double border_radius = (double) con->border_radius;
+     bool leaf = con_is_leaf(con);
+ 
+     /* This code needs to run for:
+@@ -568,11 +731,12 @@ void x_draw_decoration(Con *con) {
+         xcb_rectangle_t rectangles[4];
+         size_t rectangles_count = x_get_border_rectangles(con, rectangles);
+         for (size_t i = 0; i < rectangles_count; i++) {
+-            draw_util_rectangle(&(con->frame_buffer), p->color->child_border,
++            draw_util_soft_rectangle(&(con->frame_buffer), p->color->child_border,
+                                 rectangles[i].x,
+                                 rectangles[i].y,
+                                 rectangles[i].width,
+-                                rectangles[i].height);
++                                rectangles[i].height,
++                                border_radius);
+         }
+ 
+         /* Highlight the side of the border at which the next window will be
+@@ -746,6 +910,8 @@ void x_draw_decoration(Con *con) {
+ 
+     x_draw_decoration_after_title(con, p);
+ copy_pixmaps:
++    x_shape_window(con);
++    x_shape_inner_window(con);
+     draw_util_copy_surface(&(con->frame_buffer), &(con->frame), 0, 0, 0, 0, con->rect.width, con->rect.height);
+ }
+ 
+@@ -1019,10 +1185,13 @@ void x_push_node(Con *con) {
+             if (!con->parent ||
+                 con->parent->layout != L_STACKED ||
+                 TAILQ_FIRST(&(con->parent->focus_head)) == con)
+-                /* Render the decoration now to make the correct decoration visible
+-                 * from the very first moment. Later calls will be cached, so this
+-                 * doesn’t hurt performance. */
+-                x_deco_recurse(con);
++                {
++                    /* Render the decoration now to make the correct decoration visible
++                     * from the very first moment. Later calls will be cached, so this
++                     * doesn’t hurt performance. */
++                    x_deco_recurse(con);
++                    //x_shape_title(con);
++                }
+         }
+ 
+         DLOG("setting rect (%d, %d, %d, %d)\n", rect.x, rect.y, rect.width, rect.height);

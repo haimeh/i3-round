@@ -14,6 +14,8 @@
 #include <xcb/xcb.h>
 #include <xcb/xcb_aux.h>
 
+#define M_PI 3.14159265358979323846
+
 /* The default visual_type to use if none is specified when creating the surface. Must be defined globally. */
 extern xcb_visualtype_t *visual_type;
 
@@ -179,6 +181,31 @@ void draw_util_image(cairo_surface_t *image, surface_t *surface, int x, int y, i
     cairo_restore(surface->cr);
 }
 
+
+void cairo_soft_rectangle(
+    cairo_t *cr,
+    double x,        /* parameters like cairo_rectangle */
+    double y,
+    double width,
+    double height,
+    double aspect,     /* aspect ratio */
+    double corner_radius /* and corner curvature radius */
+    ){
+
+    double radius = corner_radius / aspect;
+    double degrees = M_PI / 180.0;
+
+    cairo_new_sub_path (cr);
+    cairo_arc (cr, x + width - radius, y + radius, radius, -90 * degrees, 0 * degrees);
+    cairo_arc (cr, x + width - radius, y + height - radius, radius, 0 * degrees, 90 * degrees);
+    cairo_arc (cr, x + radius, y + height - radius, radius, 90 * degrees, 180 * degrees);
+    cairo_arc (cr, x + radius, y + radius, radius, 180 * degrees, 270 * degrees);
+    cairo_close_path (cr);
+    
+    cairo_fill_preserve (cr);
+    cairo_stroke (cr);
+}
+
 /*
  * Draws a filled rectangle.
  * This function is a convenience wrapper and takes care of flushing the
@@ -197,6 +224,26 @@ void draw_util_rectangle(surface_t *surface, color_t color, double x, double y, 
     draw_util_set_source_color(surface, color);
 
     cairo_rectangle(surface->cr, x, y, w, h);
+    cairo_fill(surface->cr);
+
+    /* Make sure we flush the surface for any text drawing operations that could follow.
+     * Since we support drawing text via XCB, we need this. */
+    CAIRO_SURFACE_FLUSH(surface->surface);
+
+    cairo_restore(surface->cr);
+}
+void draw_util_soft_rectangle(surface_t *surface, color_t color, double x, double y, double w, double h, double corner_radius) {
+    RETURN_UNLESS_SURFACE_INITIALIZED(surface);
+
+    cairo_save(surface->cr);
+
+    /* Using the SOURCE operator will copy both color and alpha information directly
+     * onto the surface rather than blending it. This is a bit more efficient and
+     * allows better color control for the user when using opacity. */
+    cairo_set_operator(surface->cr, CAIRO_OPERATOR_SOURCE);
+    draw_util_set_source_color(surface, color);
+
+    cairo_soft_rectangle(surface->cr, x, y, w, h, 1.0, corner_radius);
     cairo_fill(surface->cr);
 
     /* Make sure we flush the surface for any text drawing operations that could follow.
